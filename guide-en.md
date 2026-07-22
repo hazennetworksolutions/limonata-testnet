@@ -36,7 +36,7 @@
 - [Step 6 — Configure Peers, Mempool and Gas Price](#step-6--configure-peers-mempool-and-gas-price)
 - [Step 7 — Create Systemd Service](#step-7--create-systemd-service)
 - [Step 8 — Start the Node](#step-8--start-the-node)
-- [Step 9 — Faster Sync with State Sync (Optional)](#step-9--faster-sync-with-state-sync-optional)
+- [Step 9 — Faster Sync with State Sync (Recommended)](#step-9--faster-sync-with-state-sync-recommended)
 - [Step 10 — Create a Wallet](#step-10--create-a-wallet)
 - [Step 11 — Create Your Validator](#step-11--create-your-validator)
 - [Step 12 — Get Scored and Apply for the Foundation Grant](#step-12--get-scored-and-apply-for-the-foundation-grant)
@@ -162,13 +162,25 @@ sudo ln -s $HOME/.limonatad/cosmovisor/current/bin/limonatad /usr/local/bin/limo
 
 ### Option B — Build from source (Go 1.26+, CGO enabled)
 
-> ℹ️ `make install` builds and installs the binary as **`evmd`** (its upstream cosmos/evm name), not `limonatad` — the `mv` below renames it on the way into Cosmovisor's `genesis/bin` so every other command in this guide keeps working unchanged.
+> ℹ️ **Four gotchas with a naive build:**
+> 1. **Build the release tag, not `main`.** `main` is the team's active development branch and can be ahead of what the live network actually runs — genesis validation rules can diverge (we hit this ourselves: a `main` build rejected the live genesis with `burn_bps 0 out of allowed range [1000,5000]` because the `x/squeeze` param validation on `main` had moved on from what the network's genesis was created with). Always `git checkout` the tag matching the network's current release (check [limonata.xyz/VALIDATOR.md](https://limonata.xyz/VALIDATOR.md) or the [latest release](https://github.com/Limonata-Blockchain/limonata/releases/latest) for the current tag — `limonata-v0.3.3` at the time of writing).
+> 2. `make install` builds and installs the binary as **`evmd`** (its upstream cosmos/evm package name), not `limonatad` — the `mv` below renames the file so every other command in this guide keeps working unchanged.
+> 3. `EXAMPLE_BINARY=limonatad` (used below) only fixes the string printed by `limonatad version` — it does **not** change the default home directory.
+> 4. The default home directory is **hardcoded in Go source**, not derived from any build flag: `evmd/config/config.go` calls `clienthelpers.GetNodeHomeDirectory(".evmd")` literally. Left as-is, `limonatad init` (and every other command) silently reads/writes `~/.evmd`, never `~/.limonatad` — no flag fixes this, you have to patch that one line **before** building. The official release binary is built from a tree where the team has already made this change; we replicate it with a one-line `sed` below.
 
 ```bash
 cd $HOME
 git clone https://github.com/Limonata-Blockchain/limonata.git
 cd limonata
-make install
+
+# build the exact tag the live network runs, NOT main — check the current tag first
+git fetch --all --tags
+git checkout limonata-v0.3.3
+
+# patch the hardcoded default home dir from ~/.evmd to ~/.limonatad
+sed -i 's/GetNodeHomeDirectory(".evmd")/GetNodeHomeDirectory(".limonatad")/' evmd/config/config.go
+
+make install EXAMPLE_BINARY=limonatad
 
 mkdir -p $HOME/.limonatad/cosmovisor/genesis/bin
 mv $HOME/go/bin/evmd $HOME/.limonatad/cosmovisor/genesis/bin/limonatad
@@ -176,6 +188,17 @@ mv $HOME/go/bin/evmd $HOME/.limonatad/cosmovisor/genesis/bin/limonatad
 ln -s $HOME/.limonatad/cosmovisor/genesis $HOME/.limonatad/cosmovisor/current -f
 sudo ln -s $HOME/.limonatad/cosmovisor/current/bin/limonatad /usr/local/bin/limonatad -f
 ```
+
+> ⚠️ If you already built without the `sed` patch and/or built from `main` instead of the release tag, and ran commands against it — e.g. `limonatad init` printed `~/.evmd/...`, or `genesis validate-genesis` failed with a param-range error like `burn_bps ... out of allowed range` — reset and rebuild from the correct tag (safe if you haven't created keys yet):
+> ```bash
+> rm -rf $HOME/.evmd $HOME/.limonatad/config $HOME/.limonatad/data
+> cd $HOME/limonata && git checkout -- . && git fetch --all --tags && git checkout limonata-v0.3.3
+> sed -i 's/GetNodeHomeDirectory(".evmd")/GetNodeHomeDirectory(".limonatad")/' evmd/config/config.go
+> make install EXAMPLE_BINARY=limonatad
+> rm -f $HOME/.limonatad/cosmovisor/genesis/bin/limonatad
+> mv $HOME/go/bin/evmd $HOME/.limonatad/cosmovisor/genesis/bin/limonatad
+> ```
+> then redo Step 5.
 
 Verify:
 
@@ -200,15 +223,10 @@ Download the genesis file:
 
 ```bash
 curl -s https://limonata.xyz/genesis.json -o $HOME/.limonatad/config/genesis.json
+wc -c $HOME/.limonatad/config/genesis.json   # sanity check: ~34 KB, non-zero
 ```
 
-Validate it — **it must print "is a valid genesis file"**:
-
-```bash
-limonatad genesis validate-genesis
-```
-
-> ⚠️ Do not continue if validation fails. Re-download the genesis file and try again.
+> ⚠️ **Do NOT run `limonatad genesis validate-genesis` — it is expected to fail on this network, and that's fine.** The published genesis predates the `x/vpcap` module that v0.3.3 registers, so its `app_state` has no `vpcap` key. The `validate-genesis` CLI passes `nil` to every registered module's validator and fails with `failed to unmarshal vpcap genesis: unexpected end of JSON input`. The node itself is unaffected: at startup, the SDK's `InitGenesis` explicitly **skips** modules whose key is missing from `app_state`, so the node starts and syncs normally. Do **not** hand-edit the genesis to add a `vpcap` key — injecting state the original network never had at height 0 causes an AppHash mismatch. (Reported to the team; if they republish `genesis.json` with the key, validation will pass again.)
 
 ---
 
@@ -298,9 +316,11 @@ limonatad status 2>&1 | jq .SyncInfo
 
 ---
 
-## Step 9 — Faster Sync with State Sync (Optional)
+## Step 9 — Faster Sync with State Sync (Recommended)
 
 State sync restores a recent snapshot instead of replaying full history — minutes instead of hours. Requires binary **v0.3.3+** (older builds diverge or lack the `squeeze` store).
+
+> ℹ️ On this network state sync is more than a speed-up: the chain has gone through on-chain binary upgrades since genesis, so replaying from height 0 with the current v0.3.3 binary can hit an AppHash mismatch at a past upgrade height. State sync joins at a recent height and sidesteps both that and the missing-`vpcap`-key genesis issue entirely. This is how other operators joined the network.
 
 ```bash
 sudo systemctl stop limonatad
@@ -517,6 +537,10 @@ limonatad query slashing signing-info $(limonatad comet show-validator)
 ---
 
 ## Troubleshooting
+
+### `failed to unmarshal vpcap genesis: unexpected end of JSON input`
+
+This comes from `limonatad genesis validate-genesis` and is **expected** — the published `genesis.json` has no `app_state.vpcap` key while the v0.3.3 binary registers the `x/vpcap` module (see the warning in Step 5). It does **not** block the node: `InitGenesis` skips missing module keys at startup. Skip the validate command, keep the genesis file unmodified, and continue with Step 6 onward (use state sync in Step 9 to join the network).
 
 ### `version 'GLIBC_2.3x' not found (required by limonatad)`
 
