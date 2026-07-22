@@ -42,6 +42,7 @@
 - [Step 12 — Get Scored and Apply for the Foundation Grant](#step-12--get-scored-and-apply-for-the-foundation-grant)
 - [Monitoring the Node](#monitoring-the-node)
 - [Useful Commands](#useful-commands)
+- [Troubleshooting](#troubleshooting)
 - [Firewall](#firewall)
 - [Staying Updated](#staying-updated)
 - [About the Author](#about-the-author)
@@ -161,6 +162,8 @@ sudo ln -s $HOME/.limonatad/cosmovisor/current/bin/limonatad /usr/local/bin/limo
 
 ### Option B — Build from source (Go 1.26+, CGO enabled)
 
+> ℹ️ `make install` builds and installs the binary as **`evmd`** (its upstream cosmos/evm name), not `limonatad` — the `mv` below renames it on the way into Cosmovisor's `genesis/bin` so every other command in this guide keeps working unchanged.
+
 ```bash
 cd $HOME
 git clone https://github.com/Limonata-Blockchain/limonata.git
@@ -168,7 +171,7 @@ cd limonata
 make install
 
 mkdir -p $HOME/.limonatad/cosmovisor/genesis/bin
-mv $HOME/go/bin/limonatad $HOME/.limonatad/cosmovisor/genesis/bin/
+mv $HOME/go/bin/evmd $HOME/.limonatad/cosmovisor/genesis/bin/limonatad
 
 ln -s $HOME/.limonatad/cosmovisor/genesis $HOME/.limonatad/cosmovisor/current -f
 sudo ln -s $HOME/.limonatad/cosmovisor/current/bin/limonatad /usr/local/bin/limonatad -f
@@ -179,6 +182,8 @@ Verify:
 ```bash
 limonatad version
 ```
+
+> ⚠️ If Option A fails with `version 'GLIBC_2.3x' not found`, the release binary was built against a newer glibc than your OS ships. Switch to **Option B** — see [Troubleshooting](#troubleshooting) below.
 
 ---
 
@@ -508,6 +513,51 @@ limonatad tx slashing unjail \
 # Signing info
 limonatad query slashing signing-info $(limonatad comet show-validator)
 ```
+
+---
+
+## Troubleshooting
+
+### `version 'GLIBC_2.3x' not found (required by limonatad)`
+
+You'll see this when running the **prebuilt release binary** (Step 4, Option A) on an OS whose glibc is older than the one the release was compiled against — for example Ubuntu 22.04 (glibc 2.35) against a binary built with glibc 2.38+.
+
+**Recommended fix — build from source (Option B):** this compiles `limonatad` against your own server's glibc, so the mismatch can't happen. No system changes, no risk to other services on the box:
+
+```bash
+rm -f $HOME/.limonatad/cosmovisor/genesis/bin/limonatad
+
+cd $HOME
+git clone https://github.com/Limonata-Blockchain/limonata.git
+cd limonata
+make install
+
+mv $HOME/go/bin/evmd $HOME/.limonatad/cosmovisor/genesis/bin/limonatad
+limonatad version
+```
+
+**Advanced alternative — keep the exact release binary, isolated per-binary:** if you specifically need the release build (e.g. to match the live network's exact binary), you can patch just that one ELF file to use a newer glibc bundled in its own folder, without touching `/lib/x86_64-linux-gnu` or any other binary on the server — the same "don't pollute the system, scope it to one binary" principle we use for `LD_LIBRARY_PATH` tricks on other chains.
+
+```bash
+sudo apt install -y patchelf
+
+# check which GLIBC version the binary actually needs
+strings $HOME/.limonatad/cosmovisor/genesis/bin/limonatad | grep -o 'GLIBC_2\.[0-9]*' | sort -V | uniq | tail -1
+
+# pull a matching glibc from a newer Ubuntu release WITHOUT installing it system-wide
+mkdir -p $HOME/.limonatad/glibc-compat && cd /tmp
+apt-get download libc6:amd64   # run this on a matching newer distro, or grab the .deb manually
+dpkg -x libc6_*.deb $HOME/.limonatad/glibc-compat
+
+# point ONLY the limonatad binary at the bundled glibc — system glibc is untouched
+patchelf --set-interpreter $HOME/.limonatad/glibc-compat/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 \
+  --set-rpath $HOME/.limonatad/glibc-compat/lib/x86_64-linux-gnu:$HOME/.limonatad/glibc-compat/usr/lib/x86_64-linux-gnu \
+  $HOME/.limonatad/cosmovisor/genesis/bin/limonatad
+
+limonatad version
+```
+
+> ⚠️ This only rewrites `limonatad`'s own ELF header (its interpreter + library search path) — every other binary and service on the server keeps using the system glibc unchanged. Still, treat it as an advanced workaround; building from source is simpler and has no failure modes.
 
 ---
 
