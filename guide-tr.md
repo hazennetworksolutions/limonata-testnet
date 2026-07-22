@@ -26,13 +26,12 @@
 
 ## İçindekiler
 
-- [Limonata Hakkında](#limonata-hakkında)
 - [Donanım Gereksinimleri](#donanım-gereksinimleri)
 - [Ağ Bilgileri](#ağ-bilgileri)
 - [Adım 1 — Sistem Kontrolü](#adım-1--sistem-kontrolü)
 - [Adım 2 — Sistem Güncelleme ve Bağımlılıklar](#adım-2--sistem-güncelleme-ve-bağımlılıklar)
 - [Adım 3 — Go Kurulumu](#adım-3--go-kurulumu)
-- [Adım 4 — Binary'nin Temin Edilmesi](#adım-4--binarynin-temin-edilmesi)
+- [Adım 4 — Binary'nin Temin Edilmesi ve Cosmovisor Kurulumu](#adım-4--binarynin-temin-edilmesi-ve-cosmovisor-kurulumu)
 - [Adım 5 — Node'un Başlatılması ve Genesis İndirilmesi](#adım-5--nodeun-başlatılması-ve-genesis-indirilmesi)
 - [Adım 6 — Peer, Mempool ve Gas Price Ayarları](#adım-6--peer-mempool-ve-gas-price-ayarları)
 - [Adım 7 — Systemd Servisi Oluşturma](#adım-7--systemd-servisi-oluşturma)
@@ -47,19 +46,6 @@
 - [Güncel Kalmak](#güncel-kalmak)
 - [Yasal Not](#yasal-not)
 - [Hakkımızda](#hakkımızda)
-
----
-
-## Limonata Hakkında
-
-Limonata, **Cosmos SDK + cosmos/evm** üzerine kurulmuş bağımsız bir EVM Layer 1 zinciridir. CometBFT tabanlı single-slot BFT finality (~2 saniyelik bloklar) ve tam uyumlu standart bir EVM sunar (MetaMask, Hardhat, Foundry, Viem hiçbir değişiklik gerektirmeden bağlanır). Native coin `LIMO`'dur (base denom `aLIMO`, 18 ondalık basamak) ve saf bir network-utility coin'dir — sadece gas ve staking için kullanılır, herhangi bir getiri vaadi yoktur.
-
-Zincir, kullanıcıların EVM gas ücretlerini kendi kendini yenileyen on-chain bir havuzdan protokol seviyesinde ödeyen bir gas sponsor modülüne (`x/gassponsor`) sahiptir. Limonata'da validator olmak **sermaye değil erişim** meselesi olarak tasarlanmıştır: validator stake'i satın almazsınız, faucet'ten küçük bir miktarla self-bond yapıp geçmiş (track record) oluşturursunuz, ardından oy gücünüzü büyütmek için foundation'dan kilitli (devredilemez) bir grant başvurusu yaparsınız. Rehberin sonundaki [yasal nota](#yasal-not) göz atın.
-
-- Web sitesi: [limonata.xyz](https://limonata.xyz)
-- Resmi validator rehberi: [limonata.xyz/VALIDATOR.md](https://limonata.xyz/VALIDATOR.md)
-- Zincir kaynak kodu: [github.com/Limonata-Blockchain/limonata](https://github.com/Limonata-Blockchain/limonata)
-- Discord: [discord.gg/vzbJ5u5Kex](https://discord.gg/vzbJ5u5Kex)
 
 ---
 
@@ -139,20 +125,39 @@ Kurulumu doğrulayın:
 go version
 ```
 
-> ℹ️ Adım 4'te hazır (prebuilt) binary kullanmayı planlıyorsanız bu adımı tamamen atlayabilirsiniz.
+> ℹ️ Cosmovisor (Adım 4) `go install` ile kurulur, dolayısıyla hazır (prebuilt) `limonatad` binary'sini kullanacak olsanız da Go'yu kurmanız gerekir.
 
 ---
 
-## Adım 4 — Binary'nin Temin Edilmesi
+## Adım 4 — Binary'nin Temin Edilmesi ve Cosmovisor Kurulumu
 
-Node binary'si `limonatad`'dır (cosmos/evm'in `evmd`'sinin bir takma adı). Aşağıdaki iki seçenekten **birini** seçin.
+`limonatad`'ı, işlettiğimiz diğer tüm Cosmos SDK zincirlerinde olduğu gibi **Cosmovisor** altında çalıştırıyoruz (AtomOne rehberimize bakabilirsiniz). Bu sayede gelecekteki upgrade'lerde binary, hedef blok yüksekliğinde manuel kesinti gerektirmeden otomatik olarak değişir.
+
+### Cosmovisor Kurulumu
+
+```bash
+go install cosmossdk.io/tools/cosmovisor/cmd/cosmovisor@v1.6.0
+```
+
+Doğrulama:
+
+```bash
+cosmovisor version
+```
+
+Node binary'si `limonatad`'dır (cosmos/evm'in `evmd`'sinin bir takma adı). Aşağıdaki iki seçenekten **birini** seçin, ardından binary'yi Cosmovisor'un `genesis` klasörüne yerleştirin.
 
 ### Seçenek A — Hazır binary (en hızlısı, canlı ağın çalıştırdığı build ile aynısı)
 
 ```bash
 cd $HOME
 curl -sL https://github.com/Limonata-Blockchain/limonata/releases/latest/download/limonatad-linux-amd64.tar.gz | tar xz
-sudo install limonatad /usr/local/bin/
+
+mkdir -p $HOME/.limonatad/cosmovisor/genesis/bin
+mv limonatad $HOME/.limonatad/cosmovisor/genesis/bin/
+
+ln -s $HOME/.limonatad/cosmovisor/genesis $HOME/.limonatad/cosmovisor/current -f
+sudo ln -s $HOME/.limonatad/cosmovisor/current/bin/limonatad /usr/local/bin/limonatad -f
 ```
 
 ### Seçenek B — Kaynak koddan derleme (Go 1.26+, CGO aktif)
@@ -162,7 +167,12 @@ cd $HOME
 git clone https://github.com/Limonata-Blockchain/limonata.git
 cd limonata
 make install
-sudo install $HOME/go/bin/limonatad /usr/local/bin/
+
+mkdir -p $HOME/.limonatad/cosmovisor/genesis/bin
+mv $HOME/go/bin/limonatad $HOME/.limonatad/cosmovisor/genesis/bin/
+
+ln -s $HOME/.limonatad/cosmovisor/genesis $HOME/.limonatad/cosmovisor/current -f
+sudo ln -s $HOME/.limonatad/cosmovisor/current/bin/limonatad /usr/local/bin/limonatad -f
 ```
 
 Doğrulama:
@@ -237,13 +247,17 @@ Wants=network-online.target
 
 [Service]
 User=$USER
-ExecStart=$(which limonatad) start \
+ExecStart=$(which cosmovisor) run start \
   --chain-id limonata_10777-1 \
   --evm.evm-chain-id 10777 \
   --minimum-gas-prices 0aLIMO
 Restart=on-failure
 RestartSec=10
 LimitNOFILE=65535
+Environment="DAEMON_HOME=$HOME/.limonatad"
+Environment="DAEMON_NAME=limonatad"
+Environment="UNSAFE_SKIP_BACKUP=true"
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:$HOME/.limonatad/cosmovisor/current/bin"
 
 [Install]
 WantedBy=multi-user.target
@@ -517,18 +531,22 @@ sudo ufw allow 26657/tcp comment "limonatad RPC"
 - Resmi validator rehberi: [limonata.xyz/VALIDATOR.md](https://limonata.xyz/VALIDATOR.md)
 - Proving Grounds (canlı liderlik tablosu): [grounds.limonata.xyz](https://grounds.limonata.xyz)
 
-### Binary Güncelleme
+### Binary Güncelleme (Cosmovisor)
+
+Node Cosmovisor altında çalıştığı için upgrade sırasında servisi durdurmanız gerekmez — yeni binary'yi önceden `upgrades` klasörüne **stage** edersiniz ve Cosmovisor hedef blok yüksekliğinde otomatik olarak geçiş yapar (örnek: `v0.4.0`):
 
 ```bash
-sudo systemctl stop limonatad
+mkdir -p $HOME/.limonatad/cosmovisor/upgrades/v0.4.0/bin
+curl -sL https://github.com/Limonata-Blockchain/limonata/releases/download/v0.4.0/limonatad-linux-amd64.tar.gz \
+  | tar xz -C $HOME/.limonatad/cosmovisor/upgrades/v0.4.0/bin
+chmod +x $HOME/.limonatad/cosmovisor/upgrades/v0.4.0/bin/limonatad
+```
 
-cd $HOME/limonata
-git fetch --all --tags
-git checkout <yeni-tag>
-make install
-sudo install $HOME/go/bin/limonatad /usr/local/bin/
+Cosmovisor, zincir üzerindeki upgrade planını algılar ve doğru blok yüksekliğinde symlink'i değiştirip otomatik olarak yeniden başlar. Bir governance upgrade'i dışında zorla güncelleme yapmanız gerekirse (örneğin ekip bu erken testnette yamalı bir build yayınlarsa), binary'yi aynı şekilde stage edip şunu çalıştırın:
 
-sudo systemctl start limonatad
+```bash
+ln -sfn $HOME/.limonatad/cosmovisor/upgrades/v0.4.0 $HOME/.limonatad/cosmovisor/current
+sudo systemctl restart limonatad
 sudo journalctl -u limonatad -f --no-pager -o cat
 ```
 
