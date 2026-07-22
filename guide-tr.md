@@ -347,6 +347,16 @@ limonatad keys show operator -a
 limonatad query bank balances $(limonatad keys show operator -a)
 ```
 
+### Faucet İçin 0x (Hex) Adres Alma
+
+Faucet, EVM tarzı `0x...` adresi ister. Bu chain EVM uyumlu olduğu (`evmd`) için aynı key'in hem bech32 (`limo1...`) hem de hex (`0x...`) karşılığı vardır — ikisi de aynı public key'den türetilir.
+
+```bash
+limonatad debug addr $(limonatad keys show operator -a)
+```
+
+Çıktıda `Address (hex)` satırını bulun ve o değeri (`0x` ön eki ile) faucet'e girin.
+
 Faucet'ten fonlayın: https://limonata.xyz
 
 ---
