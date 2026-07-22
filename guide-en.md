@@ -347,6 +347,16 @@ limonatad keys show operator -a
 limonatad query bank balances $(limonatad keys show operator -a)
 ```
 
+### Get the 0x (hex) Address for the Faucet
+
+The faucet asks for the EVM-style `0x...` address. Since this is an EVM chain (`evmd`), the same key has both a bech32 (`limo1...`) and a hex (`0x...`) representation — derived from the same public key.
+
+```bash
+limonatad debug addr $(limonatad keys show operator -a)
+```
+
+Look for the `Address (hex)` line in the output and use that value (with the `0x` prefix) on the faucet.
+
 Fund from the faucet at https://limonata.xyz.
 
 ---
