@@ -33,7 +33,7 @@
 - [Step 3 — Install Go](#step-3--install-go)
 - [Step 4 — Get the Binary and Install Cosmovisor](#step-4--get-the-binary-and-install-cosmovisor)
 - [Step 5 — Initialize the Node and Fetch Genesis](#step-5--initialize-the-node-and-fetch-genesis)
-- [Step 6 — Configure Peers, Mempool and Gas Price](#step-6--configure-peers-mempool-and-gas-price)
+- [Step 6 — Configure Peers, Mempool, Ports, Pruning and Gas Price](#step-6--configure-peers-mempool-ports-pruning-and-gas-price)
 - [Step 7 — Create Systemd Service](#step-7--create-systemd-service)
 - [Step 8 — Start the Node](#step-8--start-the-node)
 - [Step 9 — Faster Sync with State Sync (Recommended)](#step-9--faster-sync-with-state-sync-recommended)
@@ -226,11 +226,26 @@ curl -s https://limonata.xyz/genesis.json -o $HOME/.limonatad/config/genesis.jso
 wc -c $HOME/.limonatad/config/genesis.json   # sanity check: ~34 KB, non-zero
 ```
 
+Verify the checksum (compare against another operator's output or a re-download to catch a corrupted/truncated fetch):
+
+```bash
+sha256sum $HOME/.limonatad/config/genesis.json
+```
+
+Download the addrbook (speeds up initial peer discovery):
+
+```bash
+curl -s -o $HOME/.limonatad/config/addrbook.json \
+  https://raw.githubusercontent.com/hazennetworksolutions/limonata-testnet/main/addrbook.json
+```
+
+> ℹ️ Limonata doesn't publish an official addrbook yet (early testnet, network still small). The URL above follows the same convention as our [AtomOne guide](https://guides.hazennetworksolutions.com/atomone-mainnet/) — **TODO for us:** export `$HOME/.limonatad/config/addrbook.json` from our own running node and push it to `hazennetworksolutions/limonata-testnet` so this link resolves. Until then it 404s — skip the download if so; the seed configured in Step 6 is enough to bootstrap peer discovery on its own.
+
 > ⚠️ **Do NOT run `limonatad genesis validate-genesis` — it is expected to fail on this network, and that's fine.** The published genesis predates the `x/vpcap` module that v0.3.3 registers, so its `app_state` has no `vpcap` key. The `validate-genesis` CLI passes `nil` to every registered module's validator and fails with `failed to unmarshal vpcap genesis: unexpected end of JSON input`. The node itself is unaffected: at startup, the SDK's `InitGenesis` explicitly **skips** modules whose key is missing from `app_state`, so the node starts and syncs normally. Do **not** hand-edit the genesis to add a `vpcap` key — injecting state the original network never had at height 0 causes an AppHash mismatch. (Reported to the team; if they republish `genesis.json` with the key, validation will pass again.)
 
 ---
 
-## Step 6 — Configure Peers, Mempool and Gas Price
+## Step 6 — Configure Peers, Mempool, Ports, Pruning and Gas Price
 
 This build has three settings that are **required**, not optional — the node will not sync or accept transactions correctly without them.
 
@@ -254,7 +269,59 @@ Set your external address so peers can reach you (optional, but recommended):
 sed -i "s%^external_address = \"\"%external_address = \"$(wget -qO- eth0.me):26656\"%" "$CFG"
 ```
 
-> ℹ️ If you are running multiple nodes on the same host, change the default port prefix (`26`) throughout `config.toml` and `app.toml` to avoid conflicts.
+### Custom ports (running more than one node on the same host)
+
+If `limonatad` is the only chain on this server, skip this — the defaults are fine. If you're running several validators/full nodes side by side, pick a 3-digit port prefix per node (e.g. `119`) and remap every port in one shot instead of editing files by hand:
+
+```bash
+echo "export LIMO_PORT=\"119\"" >> $HOME/.bash_profile
+source $HOME/.bash_profile
+
+sed -i.bak -e "s%:1317%:${LIMO_PORT}17%g;
+s%:8080%:${LIMO_PORT}80%g;
+s%:9090%:${LIMO_PORT}90%g;
+s%:9091%:${LIMO_PORT}91%g;
+s%:8545%:${LIMO_PORT}45%g;
+s%:8546%:${LIMO_PORT}46%g;
+s%:6065%:${LIMO_PORT}65%g" "$APP"
+
+sed -i.bak -e "s%:26658%:${LIMO_PORT}58%g;
+s%:26657%:${LIMO_PORT}57%g;
+s%:6060%:${LIMO_PORT}60%g;
+s%:26656%:${LIMO_PORT}56%g;
+s%^external_address = \"\"%external_address = \"$(wget -qO- eth0.me):${LIMO_PORT}56\"%;
+s%:26660%:${LIMO_PORT}61%g" "$CFG"
+```
+
+> ⚠️ If you change the P2P port (`26656` → `${LIMO_PORT}56`), update the [Firewall](#firewall) rule and any `--node` flags you pass to `limonatad` accordingly. This also means the seed/peer strings from Step 6.1 keep their `:26656` port as-is — that's the **remote** node's port, not yours.
+
+### Pruning (disk space)
+
+By default the node keeps every historical version of the state store, which grows fast. Unless you specifically need full history (e.g. for an archive/RPC node), prune old versions:
+
+```bash
+sed -i -e 's/^pruning *=.*/pruning = "custom"/' "$APP"
+sed -i -e 's/^pruning-keep-recent *=.*/pruning-keep-recent = "100"/' "$APP"
+sed -i -e 's/^pruning-interval *=.*/pruning-interval = "10"/' "$APP"
+```
+
+> ⚠️ Do **not** enable custom pruning if you plan to serve state sync snapshots to other operators from this node — snapshot heights must stay available. Leave `pruning = "default"` on any node you intend to run as a public snapshot/RPC provider.
+
+### Disable the tx indexer (optional, saves disk + CPU)
+
+If you don't need to query historical transactions by hash/event through this node's own RPC (most validators don't — they query the public explorer/RPC instead), turn the indexer off:
+
+```bash
+sed -i -e 's/^indexer *=.*/indexer = "null"/' "$CFG"
+```
+
+### Enable Prometheus (optional)
+
+Turn this on if you're feeding node metrics into Grafana/Prometheus for monitoring:
+
+```bash
+sed -i -e 's/prometheus = false/prometheus = true/' "$CFG"
+```
 
 ---
 
@@ -518,6 +585,31 @@ limonatad tx staking unbond <valoper-address> <amount>aLIMO \
   --from operator --chain-id limonata_10777-1 --gas auto --gas-adjustment 1.4 --gas-prices 1000000000aLIMO -y
 ```
 
+### Rewards
+
+```bash
+# Withdraw all rewards
+limonatad tx distribution withdraw-all-rewards \
+  --from operator --chain-id limonata_10777-1 --gas auto --gas-adjustment 1.4 --gas-prices 1000000000aLIMO -y
+
+# Withdraw commission
+limonatad tx distribution withdraw-rewards $(limonatad keys show operator --bech val -a) --commission \
+  --from operator --chain-id limonata_10777-1 --gas auto --gas-adjustment 1.4 --gas-prices 1000000000aLIMO -y
+```
+
+> ℹ️ `x/mint` inflation is off on this testnet, so there's no staking reward stream yet — this is fee-share only, and fees are close to zero while most transactions are gas-sponsored (see Step 6, item 3). Rewards become meaningful once real fee volume or a mint schedule goes live.
+
+### Governance
+
+```bash
+# List proposals
+limonatad query gov proposals
+
+# Vote on a proposal
+limonatad tx gov vote 1 yes \
+  --from operator --chain-id limonata_10777-1 --gas auto --gas-adjustment 1.4 --gas-prices 1000000000aLIMO -y
+```
+
 ### Validator operations
 
 ```bash
@@ -594,6 +686,8 @@ sudo ufw allow 26656/tcp comment "limonatad P2P"
 # RPC — open only if you serve public endpoints
 sudo ufw allow 26657/tcp comment "limonatad RPC"
 ```
+
+> ℹ️ If you set a custom port prefix in Step 6, open `${LIMO_PORT}56` (P2P) and, if needed, `${LIMO_PORT}57` (RPC) instead of the defaults above.
 
 ---
 
