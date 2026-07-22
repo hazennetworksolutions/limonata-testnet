@@ -26,13 +26,12 @@
 
 ## Table of Contents
 
-- [About Limonata](#about-limonata)
 - [Hardware Requirements](#hardware-requirements)
 - [Network Endpoints](#network-endpoints)
 - [Step 1 — System Verification](#step-1--system-verification)
 - [Step 2 — System Update and Dependencies](#step-2--system-update-and-dependencies)
 - [Step 3 — Install Go](#step-3--install-go)
-- [Step 4 — Get the Binary](#step-4--get-the-binary)
+- [Step 4 — Get the Binary and Install Cosmovisor](#step-4--get-the-binary-and-install-cosmovisor)
 - [Step 5 — Initialize the Node and Fetch Genesis](#step-5--initialize-the-node-and-fetch-genesis)
 - [Step 6 — Configure Peers, Mempool and Gas Price](#step-6--configure-peers-mempool-and-gas-price)
 - [Step 7 — Create Systemd Service](#step-7--create-systemd-service)
@@ -46,19 +45,6 @@
 - [Firewall](#firewall)
 - [Staying Updated](#staying-updated)
 - [About the Author](#about-the-author)
-
----
-
-## About Limonata
-
-Limonata is an independent EVM Layer 1 built on the **Cosmos SDK + cosmos/evm**, with CometBFT single-slot BFT finality (~2s blocks) and a full standard EVM (MetaMask, Hardhat, Foundry, Viem all connect unchanged). The native coin is `LIMO` (base denom `aLIMO`, 18 decimals) and it is a pure network-utility coin — gas and staking only, no yield.
-
-The chain runs a protocol-level gas sponsor (`x/gassponsor`) that pays EVM gas for users out of a self-refilling on-chain pool, and validating on Limonata is designed as **access, not capital**: you don't buy a validator stake, you self-bond a small faucet amount, build a track record, and then apply for a locked, non-transferable grant from the foundation to grow your voting power. See the [legal note](#legal-note) at the end of this guide.
-
-- Website: [limonata.xyz](https://limonata.xyz)
-- Official validator guide: [limonata.xyz/VALIDATOR.md](https://limonata.xyz/VALIDATOR.md)
-- Chain source: [github.com/Limonata-Blockchain/limonata](https://github.com/Limonata-Blockchain/limonata)
-- Discord: [discord.gg/vzbJ5u5Kex](https://discord.gg/vzbJ5u5Kex)
 
 ---
 
@@ -138,20 +124,39 @@ Verify the installation:
 go version
 ```
 
-> ℹ️ Skip this step entirely if you plan to use the prebuilt binary in Step 4.
+> ℹ️ Cosmovisor (Step 4) is installed via `go install`, so keep Go even if you plan to use the prebuilt `limonatad` binary.
 
 ---
 
-## Step 4 — Get the Binary
+## Step 4 — Get the Binary and Install Cosmovisor
 
-The node binary is `limonatad` (an alias of cosmos/evm's `evmd`). Pick **one** of the two options below.
+We run `limonatad` under **Cosmovisor**, the same way we run every other Cosmos SDK chain we operate (see our AtomOne guide). This lets future upgrades swap the binary automatically at the target block height, with no manual downtime.
+
+### Install Cosmovisor
+
+```bash
+go install cosmossdk.io/tools/cosmovisor/cmd/cosmovisor@v1.6.0
+```
+
+Verify:
+
+```bash
+cosmovisor version
+```
+
+The node binary itself is `limonatad` (an alias of cosmos/evm's `evmd`). Pick **one** of the two options below, then place it in Cosmovisor's `genesis` folder.
 
 ### Option A — Prebuilt binary (fastest, the exact build the live network runs)
 
 ```bash
 cd $HOME
 curl -sL https://github.com/Limonata-Blockchain/limonata/releases/latest/download/limonatad-linux-amd64.tar.gz | tar xz
-sudo install limonatad /usr/local/bin/
+
+mkdir -p $HOME/.limonatad/cosmovisor/genesis/bin
+mv limonatad $HOME/.limonatad/cosmovisor/genesis/bin/
+
+ln -s $HOME/.limonatad/cosmovisor/genesis $HOME/.limonatad/cosmovisor/current -f
+sudo ln -s $HOME/.limonatad/cosmovisor/current/bin/limonatad /usr/local/bin/limonatad -f
 ```
 
 ### Option B — Build from source (Go 1.26+, CGO enabled)
@@ -161,7 +166,12 @@ cd $HOME
 git clone https://github.com/Limonata-Blockchain/limonata.git
 cd limonata
 make install
-sudo install $HOME/go/bin/limonatad /usr/local/bin/
+
+mkdir -p $HOME/.limonatad/cosmovisor/genesis/bin
+mv $HOME/go/bin/limonatad $HOME/.limonatad/cosmovisor/genesis/bin/
+
+ln -s $HOME/.limonatad/cosmovisor/genesis $HOME/.limonatad/cosmovisor/current -f
+sudo ln -s $HOME/.limonatad/cosmovisor/current/bin/limonatad /usr/local/bin/limonatad -f
 ```
 
 Verify:
@@ -236,13 +246,17 @@ Wants=network-online.target
 
 [Service]
 User=$USER
-ExecStart=$(which limonatad) start \
+ExecStart=$(which cosmovisor) run start \
   --chain-id limonata_10777-1 \
   --evm.evm-chain-id 10777 \
   --minimum-gas-prices 0aLIMO
 Restart=on-failure
 RestartSec=10
 LimitNOFILE=65535
+Environment="DAEMON_HOME=$HOME/.limonatad"
+Environment="DAEMON_NAME=limonatad"
+Environment="UNSAFE_SKIP_BACKUP=true"
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:$HOME/.limonatad/cosmovisor/current/bin"
 
 [Install]
 WantedBy=multi-user.target
@@ -516,18 +530,22 @@ sudo ufw allow 26657/tcp comment "limonatad RPC"
 - Official validator guide: [limonata.xyz/VALIDATOR.md](https://limonata.xyz/VALIDATOR.md)
 - Proving Grounds (live leaderboard): [grounds.limonata.xyz](https://grounds.limonata.xyz)
 
-### Upgrading the binary
+### Upgrading the binary (Cosmovisor)
+
+Since the node runs under Cosmovisor, you don't stop the service to upgrade — you **stage** the new binary in an `upgrades` folder ahead of time, and Cosmovisor swaps to it automatically at the target height (example: `v0.4.0`):
 
 ```bash
-sudo systemctl stop limonatad
+mkdir -p $HOME/.limonatad/cosmovisor/upgrades/v0.4.0/bin
+curl -sL https://github.com/Limonata-Blockchain/limonata/releases/download/v0.4.0/limonatad-linux-amd64.tar.gz \
+  | tar xz -C $HOME/.limonatad/cosmovisor/upgrades/v0.4.0/bin
+chmod +x $HOME/.limonatad/cosmovisor/upgrades/v0.4.0/bin/limonatad
+```
 
-cd $HOME/limonata
-git fetch --all --tags
-git checkout <new-tag>
-make install
-sudo install $HOME/go/bin/limonatad /usr/local/bin/
+Cosmovisor detects the upgrade plan on-chain and switches the symlink at the correct block height, then restarts automatically. If you need to force-update outside of a governance upgrade (e.g. the team ships a patched build on this early testnet), stage the binary the same way, then:
 
-sudo systemctl start limonatad
+```bash
+ln -sfn $HOME/.limonatad/cosmovisor/upgrades/v0.4.0 $HOME/.limonatad/cosmovisor/current
+sudo systemctl restart limonatad
 sudo journalctl -u limonatad -f --no-pager -o cat
 ```
 
