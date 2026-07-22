@@ -36,7 +36,7 @@
 - [Adım 6 — Peer, Mempool ve Gas Price Ayarları](#adım-6--peer-mempool-ve-gas-price-ayarları)
 - [Adım 7 — Systemd Servisi Oluşturma](#adım-7--systemd-servisi-oluşturma)
 - [Adım 8 — Node'un Başlatılması](#adım-8--nodeun-başlatılması)
-- [Adım 9 — State Sync ile Hızlı Senkronizasyon (Opsiyonel)](#adım-9--state-sync-ile-hızlı-senkronizasyon-opsiyonel)
+- [Adım 9 — State Sync ile Hızlı Senkronizasyon (Önerilen)](#adım-9--state-sync-ile-hızlı-senkronizasyon-önerilen)
 - [Adım 10 — Cüzdan Oluşturma](#adım-10--cüzdan-oluşturma)
 - [Adım 11 — Validator Oluşturma](#adım-11--validator-oluşturma)
 - [Adım 12 — Skor Kazanma ve Foundation Grant Başvurusu](#adım-12--skor-kazanma-ve-foundation-grant-başvurusu)
@@ -163,13 +163,25 @@ sudo ln -s $HOME/.limonatad/cosmovisor/current/bin/limonatad /usr/local/bin/limo
 
 ### Seçenek B — Kaynak koddan derleme (Go 1.26+, CGO aktif)
 
-> ℹ️ `make install`, binary'yi `limonatad` olarak değil, **`evmd`** (upstream cosmos/evm'deki ismi) olarak derler ve kurar — aşağıdaki `mv` komutu, bu rehberdeki diğer tüm komutların değişmeden çalışmasını sağlamak için binary'yi Cosmovisor'un `genesis/bin` klasörüne taşırken yeniden adlandırıyor.
+> ℹ️ **Basit bir build'de dört tuzak var:**
+> 1. **`main` değil, release tag'ini derleyin.** `main`, ekibin aktif geliştirme branch'i ve canlı ağın çalıştırdığından ileride olabiliyor — genesis validasyon kuralları farklılaşabiliyor (biz bunu bizzat yaşadık: `main`'den derlenen binary, canlı genesis'i `burn_bps 0 out of allowed range [1000,5000]` diyerek reddetti, çünkü `main`'deki `x/squeeze` parametre validasyonu, ağın genesis'inin oluşturulduğu andan sonra değişmişti). Her zaman ağın o anki sürümüne denk gelen tag'i `git checkout` edin (güncel tag için [limonata.xyz/VALIDATOR.md](https://limonata.xyz/VALIDATOR.md) veya [en son release](https://github.com/Limonata-Blockchain/limonata/releases/latest)'e bakın — bu yazı yazıldığı sırada `limonata-v0.3.3`).
+> 2. `make install`, binary'yi `limonatad` olarak değil, **`evmd`** (upstream cosmos/evm paket ismi) olarak derler ve kurar — aşağıdaki `mv` komutu dosyayı yeniden adlandırıyor ki rehberdeki diğer tüm komutlar değişmeden çalışsın.
+> 3. Aşağıda kullanılan `EXAMPLE_BINARY=limonatad` **sadece** `limonatad version` çıktısındaki ismi düzeltir — varsayılan home dizinini **değiştirmez**.
+> 4. Varsayılan home dizini herhangi bir build flag'inden gelmiyor, **doğrudan Go kaynak kodunda sabit yazılı**: `evmd/config/config.go`, `clienthelpers.GetNodeHomeDirectory(".evmd")`'yi düz metin olarak çağırıyor. Bu satır değiştirilmeden derlenirse `limonatad init` (ve diğer tüm komutlar) sessizce `~/.evmd`'yi okur/yazar, asla `~/.limonatad`'ı kullanmaz — hiçbir flag bunu düzeltmez, derlemeden **önce** bu tek satırı patch'lemeniz gerekir. Resmi release binary'si, ekibin bu değişikliği zaten yaptığı bir ağaçtan derleniyor; biz de aynısını aşağıdaki tek satır `sed` ile yapıyoruz.
 
 ```bash
 cd $HOME
 git clone https://github.com/Limonata-Blockchain/limonata.git
 cd limonata
-make install
+
+# canlı ağın çalıştırdığı tam tag'i derleyin, main DEĞİL — önce güncel tag'i kontrol edin
+git fetch --all --tags
+git checkout limonata-v0.3.3
+
+# hardcoded varsayılan home dizinini ~/.evmd'den ~/.limonatad'a çeviriyoruz
+sed -i 's/GetNodeHomeDirectory(".evmd")/GetNodeHomeDirectory(".limonatad")/' evmd/config/config.go
+
+make install EXAMPLE_BINARY=limonatad
 
 mkdir -p $HOME/.limonatad/cosmovisor/genesis/bin
 mv $HOME/go/bin/evmd $HOME/.limonatad/cosmovisor/genesis/bin/limonatad
@@ -177,6 +189,17 @@ mv $HOME/go/bin/evmd $HOME/.limonatad/cosmovisor/genesis/bin/limonatad
 ln -s $HOME/.limonatad/cosmovisor/genesis $HOME/.limonatad/cosmovisor/current -f
 sudo ln -s $HOME/.limonatad/cosmovisor/current/bin/limonatad /usr/local/bin/limonatad -f
 ```
+
+> ⚠️ Eğer zaten `sed` patch'i olmadan ve/veya `main`'den (doğru tag yerine) derleyip binary'yi kullandıysanız — örneğin `limonatad init` `~/.evmd/...` yazdıysa, ya da `genesis validate-genesis` `burn_bps ... out of allowed range` gibi bir parametre aralığı hatasıyla başarısız olduysa — henüz key oluşturmadıysanız sıfırlayıp doğru tag'den yeniden derleyin:
+> ```bash
+> rm -rf $HOME/.evmd $HOME/.limonatad/config $HOME/.limonatad/data
+> cd $HOME/limonata && git checkout -- . && git fetch --all --tags && git checkout limonata-v0.3.3
+> sed -i 's/GetNodeHomeDirectory(".evmd")/GetNodeHomeDirectory(".limonatad")/' evmd/config/config.go
+> make install EXAMPLE_BINARY=limonatad
+> rm -f $HOME/.limonatad/cosmovisor/genesis/bin/limonatad
+> mv $HOME/go/bin/evmd $HOME/.limonatad/cosmovisor/genesis/bin/limonatad
+> ```
+> ardından Adım 5'i tekrar çalıştırın.
 
 Doğrulama:
 
@@ -201,15 +224,10 @@ Genesis dosyasını indirin:
 
 ```bash
 curl -s https://limonata.xyz/genesis.json -o $HOME/.limonatad/config/genesis.json
+wc -c $HOME/.limonatad/config/genesis.json   # kontrol: ~34 KB, sıfır olmamalı
 ```
 
-Doğrulayın — çıktı **"is a valid genesis file"** yazmalıdır:
-
-```bash
-limonatad genesis validate-genesis
-```
-
-> ⚠️ Doğrulama başarısız olursa devam etmeyin. Genesis dosyasını yeniden indirip tekrar deneyin.
+> ⚠️ **`limonatad genesis validate-genesis` KOMUTUNU ÇALIŞTIRMAYIN — bu ağda başarısız olması beklenen bir durumdur ve sorun değildir.** Yayınlanan genesis dosyası, v0.3.3 binary'sinin kaydettiği `x/vpcap` modülünden daha eski; bu yüzden `app_state` içinde `vpcap` anahtarı yok. `validate-genesis` CLI komutu kayıtlı her modülün doğrulayıcısına genesis'teki anahtarı gönderir; anahtar yoksa `nil` gider ve `failed to unmarshal vpcap genesis: unexpected end of JSON input` hatası üretir. Node'un kendisi bundan etkilenmez: başlangıçtaki `InitGenesis`, `app_state`'te anahtarı olmayan modülleri açıkça **atlar**, yani node normal başlar ve senkronize olur. Genesis dosyasına elle `vpcap` anahtarı **eklemeyin** — orijinal ağda hiç var olmamış bir state'i height 0'a enjekte etmek AppHash uyuşmazlığına yol açar. (Ekibe bildirildi; `genesis.json`'u anahtarla birlikte yeniden yayınlarlarsa doğrulama tekrar geçer.)
 
 ---
 
@@ -299,9 +317,11 @@ limonatad status 2>&1 | jq .SyncInfo
 
 ---
 
-## Adım 9 — State Sync ile Hızlı Senkronizasyon (Opsiyonel)
+## Adım 9 — State Sync ile Hızlı Senkronizasyon (Önerilen)
 
 State sync, tüm geçmişi tekrar oynatmak yerine güncel bir snapshot'ı geri yükler — saatler yerine dakikalar sürer. **v0.3.3+** binary gerektirir (daha eski build'ler ayrışır ya da `squeeze` store'a sahip değildir).
+
+> ℹ️ Bu ağda state sync sadece hız kazancı değil: zincir genesis'ten bu yana zincir üstü binary upgrade'lerinden geçti, dolayısıyla güncel v0.3.3 binary ile height 0'dan replay etmek geçmiş bir upgrade yüksekliğinde AppHash uyuşmazlığına takılabilir. State sync güncel bir yükseklikten katılır; hem bu sorunu hem de genesis'teki eksik `vpcap` anahtarı sorununu tamamen devre dışı bırakır. Diğer operatörler de ağa bu şekilde katıldı.
 
 ```bash
 sudo systemctl stop limonatad
@@ -518,6 +538,10 @@ limonatad query slashing signing-info $(limonatad comet show-validator)
 ---
 
 ## Sorun Giderme
+
+### `failed to unmarshal vpcap genesis: unexpected end of JSON input`
+
+Bu hata `limonatad genesis validate-genesis` komutundan gelir ve **beklenen** bir durumdur — yayınlanan `genesis.json` dosyasında `app_state.vpcap` anahtarı yokken v0.3.3 binary'si `x/vpcap` modülünü kaydeder (Adım 5'teki uyarıya bakın). Node'u engellemez: `InitGenesis` başlangıçta eksik modül anahtarlarını atlar. Validate komutunu atlayın, genesis dosyasını değiştirmeden bırakın ve Adım 6'dan itibaren devam edin (ağa katılmak için Adım 9'daki state sync'i kullanın).
 
 ### `version 'GLIBC_2.3x' not found (required by limonatad)`
 
