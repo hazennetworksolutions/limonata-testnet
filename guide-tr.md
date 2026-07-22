@@ -33,7 +33,7 @@
 - [Adım 3 — Go Kurulumu](#adım-3--go-kurulumu)
 - [Adım 4 — Binary'nin Temin Edilmesi ve Cosmovisor Kurulumu](#adım-4--binarynin-temin-edilmesi-ve-cosmovisor-kurulumu)
 - [Adım 5 — Node'un Başlatılması ve Genesis İndirilmesi](#adım-5--nodeun-başlatılması-ve-genesis-indirilmesi)
-- [Adım 6 — Peer, Mempool ve Gas Price Ayarları](#adım-6--peer-mempool-ve-gas-price-ayarları)
+- [Adım 6 — Peer, Mempool, Port, Pruning ve Gas Price Ayarları](#adım-6--peer-mempool-port-pruning-ve-gas-price-ayarları)
 - [Adım 7 — Systemd Servisi Oluşturma](#adım-7--systemd-servisi-oluşturma)
 - [Adım 8 — Node'un Başlatılması](#adım-8--nodeun-başlatılması)
 - [Adım 9 — State Sync ile Hızlı Senkronizasyon (Önerilen)](#adım-9--state-sync-ile-hızlı-senkronizasyon-önerilen)
@@ -227,11 +227,26 @@ curl -s https://limonata.xyz/genesis.json -o $HOME/.limonatad/config/genesis.jso
 wc -c $HOME/.limonatad/config/genesis.json   # kontrol: ~34 KB, sıfır olmamalı
 ```
 
+Checksum'u doğrulayın (başka bir operatörün çıktısıyla ya da yeniden indirilmiş bir kopyayla karşılaştırıp bozuk/kesik bir indirmeyi yakalamak için):
+
+```bash
+sha256sum $HOME/.limonatad/config/genesis.json
+```
+
+Addrbook'u indirin (ilk peer keşfini hızlandırır):
+
+```bash
+curl -s -o $HOME/.limonatad/config/addrbook.json \
+  https://raw.githubusercontent.com/hazennetworksolutions/limonata-testnet/main/addrbook.json
+```
+
+> ℹ️ Limonata henüz resmi bir addrbook yayınlamıyor (erken testnet, ağ hâlâ küçük). Yukarıdaki URL, [AtomOne guide](https://guides.hazennetworksolutions.com/atomone-mainnet/)'ımızdaki aynı konvansiyonu takip ediyor — **bizim için TODO:** kendi çalışan node'umuzdan `$HOME/.limonatad/config/addrbook.json`'u export edip `hazennetworksolutions/limonata-testnet` reposuna push etmemiz gerekiyor ki bu link çalışsın. O zamana kadar 404 verir — öyleyse indirmeyi atlayın; Adım 6'da ayarlanan seed, peer keşfini kendi başına başlatmak için yeterli.
+
 > ⚠️ **`limonatad genesis validate-genesis` KOMUTUNU ÇALIŞTIRMAYIN — bu ağda başarısız olması beklenen bir durumdur ve sorun değildir.** Yayınlanan genesis dosyası, v0.3.3 binary'sinin kaydettiği `x/vpcap` modülünden daha eski; bu yüzden `app_state` içinde `vpcap` anahtarı yok. `validate-genesis` CLI komutu kayıtlı her modülün doğrulayıcısına genesis'teki anahtarı gönderir; anahtar yoksa `nil` gider ve `failed to unmarshal vpcap genesis: unexpected end of JSON input` hatası üretir. Node'un kendisi bundan etkilenmez: başlangıçtaki `InitGenesis`, `app_state`'te anahtarı olmayan modülleri açıkça **atlar**, yani node normal başlar ve senkronize olur. Genesis dosyasına elle `vpcap` anahtarı **eklemeyin** — orijinal ağda hiç var olmamış bir state'i height 0'a enjekte etmek AppHash uyuşmazlığına yol açar. (Ekibe bildirildi; `genesis.json`'u anahtarla birlikte yeniden yayınlarlarsa doğrulama tekrar geçer.)
 
 ---
 
-## Adım 6 — Peer, Mempool ve Gas Price Ayarları
+## Adım 6 — Peer, Mempool, Port, Pruning ve Gas Price Ayarları
 
 Bu build'de **opsiyonel olmayan**, zorunlu üç ayar var — bunlar yapılmadan node ne düzgün senkronize olur ne de işlemleri doğru kabul eder.
 
@@ -255,7 +270,59 @@ Diğer peer'lerin sizi bulabilmesi için external address ayarlayın (opsiyonel,
 sed -i "s%^external_address = \"\"%external_address = \"$(wget -qO- eth0.me):26656\"%" "$CFG"
 ```
 
-> ℹ️ Aynı sunucuda birden fazla node çalıştırıyorsanız, çakışmaları önlemek için `config.toml` ve `app.toml` içindeki varsayılan port ön ekini (`26`) değiştirin.
+### Özel portlar (aynı sunucuda birden fazla node çalıştırma)
+
+Bu sunucuda tek zincir `limonatad` ise bu kısmı atlayın — varsayılan portlar yeterli. Aynı sunucuda birden fazla validator/full node yan yana çalıştırıyorsanız, her node için 3 haneli bir port ön eki seçin (örn. `119`) ve tüm portları dosyaları elle düzenlemek yerine tek seferde değiştirin:
+
+```bash
+echo "export LIMO_PORT=\"119\"" >> $HOME/.bash_profile
+source $HOME/.bash_profile
+
+sed -i.bak -e "s%:1317%:${LIMO_PORT}17%g;
+s%:8080%:${LIMO_PORT}80%g;
+s%:9090%:${LIMO_PORT}90%g;
+s%:9091%:${LIMO_PORT}91%g;
+s%:8545%:${LIMO_PORT}45%g;
+s%:8546%:${LIMO_PORT}46%g;
+s%:6065%:${LIMO_PORT}65%g" "$APP"
+
+sed -i.bak -e "s%:26658%:${LIMO_PORT}58%g;
+s%:26657%:${LIMO_PORT}57%g;
+s%:6060%:${LIMO_PORT}60%g;
+s%:26656%:${LIMO_PORT}56%g;
+s%^external_address = \"\"%external_address = \"$(wget -qO- eth0.me):${LIMO_PORT}56\"%;
+s%:26660%:${LIMO_PORT}61%g" "$CFG"
+```
+
+> ⚠️ P2P portunu değiştirirseniz (`26656` → `${LIMO_PORT}56`), [Firewall](#firewall) kuralını ve `limonatad`'a verdiğiniz `--node` parametrelerini buna göre güncelleyin. Adım 6.1'deki seed/peer string'leri kendi `:26656` portunu korur — o **karşı tarafın** (uzak node'un) portudur, sizinki değil.
+
+### Pruning (disk alanı)
+
+Varsayılan olarak node her state versiyonunu saklar, bu da diski hızla doldurur. Full history'ye özel olarak ihtiyacınız yoksa (örn. archive/RPC node), eski versiyonları budayın:
+
+```bash
+sed -i -e 's/^pruning *=.*/pruning = "custom"/' "$APP"
+sed -i -e 's/^pruning-keep-recent *=.*/pruning-keep-recent = "100"/' "$APP"
+sed -i -e 's/^pruning-interval *=.*/pruning-interval = "10"/' "$APP"
+```
+
+> ⚠️ Bu node'dan diğer operatörlere state sync snapshot'ı servis edecekseniz custom pruning'i **açmayın** — snapshot yüksekliklerinin erişilebilir kalması gerekir. Public snapshot/RPC sağlayıcısı olarak çalıştıracağınız node'larda `pruning = "default"` bırakın.
+
+### Tx indexer'ı kapatma (opsiyonel, disk + CPU tasarrufu)
+
+Kendi node'unuzun RPC'si üzerinden geçmiş işlemleri hash/event ile sorgulamaya ihtiyacınız yoksa (çoğu validator sorgularını public explorer/RPC üzerinden yapar), indexer'ı kapatın:
+
+```bash
+sed -i -e 's/^indexer *=.*/indexer = "null"/' "$CFG"
+```
+
+### Prometheus'u aktifleştirme (opsiyonel)
+
+Node metriklerini Grafana/Prometheus'a besliyorsanız açın:
+
+```bash
+sed -i -e 's/prometheus = false/prometheus = true/' "$CFG"
+```
 
 ---
 
@@ -519,6 +586,31 @@ limonatad tx staking unbond <valoper-adresi> <miktar>aLIMO \
   --from operator --chain-id limonata_10777-1 --gas auto --gas-adjustment 1.4 --gas-prices 1000000000aLIMO -y
 ```
 
+### Rewards
+
+```bash
+# Tüm rewards'ı çek
+limonatad tx distribution withdraw-all-rewards \
+  --from operator --chain-id limonata_10777-1 --gas auto --gas-adjustment 1.4 --gas-prices 1000000000aLIMO -y
+
+# Komisyonu çek
+limonatad tx distribution withdraw-rewards $(limonatad keys show operator --bech val -a) --commission \
+  --from operator --chain-id limonata_10777-1 --gas auto --gas-adjustment 1.4 --gas-prices 1000000000aLIMO -y
+```
+
+> ℹ️ Bu testnette `x/mint` inflation kapalı, yani henüz bir staking reward akışı yok — bu sadece fee-share, ve işlemlerin çoğu gas-sponsorlu olduğu için (Adım 6, 3. madde) fee'ler sıfıra yakın. Gerçek fee hacmi veya bir mint takvimi devreye girince rewards anlamlı hale gelecek.
+
+### Governance
+
+```bash
+# Proposal'ları listele
+limonatad query gov proposals
+
+# Bir proposal'a oy ver
+limonatad tx gov vote 1 yes \
+  --from operator --chain-id limonata_10777-1 --gas auto --gas-adjustment 1.4 --gas-prices 1000000000aLIMO -y
+```
+
 ### Validator işlemleri
 
 ```bash
@@ -595,6 +687,8 @@ sudo ufw allow 26656/tcp comment "limonatad P2P"
 # RPC — sadece public endpoint sunuyorsanız açın
 sudo ufw allow 26657/tcp comment "limonatad RPC"
 ```
+
+> ℹ️ Adım 6'da özel bir port ön eki belirlediyseniz, yukarıdakiler yerine `${LIMO_PORT}56` (P2P) ve gerekirse `${LIMO_PORT}57` (RPC) portlarını açın.
 
 ---
 
