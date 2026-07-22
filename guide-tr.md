@@ -42,6 +42,7 @@
 - [Adım 12 — Skor Kazanma ve Foundation Grant Başvurusu](#adım-12--skor-kazanma-ve-foundation-grant-başvurusu)
 - [Node İzleme](#node-izleme)
 - [Kullanışlı Komutlar](#kullanışlı-komutlar)
+- [Sorun Giderme](#sorun-giderme)
 - [Firewall](#firewall)
 - [Güncel Kalmak](#güncel-kalmak)
 - [Yasal Not](#yasal-not)
@@ -162,6 +163,8 @@ sudo ln -s $HOME/.limonatad/cosmovisor/current/bin/limonatad /usr/local/bin/limo
 
 ### Seçenek B — Kaynak koddan derleme (Go 1.26+, CGO aktif)
 
+> ℹ️ `make install`, binary'yi `limonatad` olarak değil, **`evmd`** (upstream cosmos/evm'deki ismi) olarak derler ve kurar — aşağıdaki `mv` komutu, bu rehberdeki diğer tüm komutların değişmeden çalışmasını sağlamak için binary'yi Cosmovisor'un `genesis/bin` klasörüne taşırken yeniden adlandırıyor.
+
 ```bash
 cd $HOME
 git clone https://github.com/Limonata-Blockchain/limonata.git
@@ -169,7 +172,7 @@ cd limonata
 make install
 
 mkdir -p $HOME/.limonatad/cosmovisor/genesis/bin
-mv $HOME/go/bin/limonatad $HOME/.limonatad/cosmovisor/genesis/bin/
+mv $HOME/go/bin/evmd $HOME/.limonatad/cosmovisor/genesis/bin/limonatad
 
 ln -s $HOME/.limonatad/cosmovisor/genesis $HOME/.limonatad/cosmovisor/current -f
 sudo ln -s $HOME/.limonatad/cosmovisor/current/bin/limonatad /usr/local/bin/limonatad -f
@@ -180,6 +183,8 @@ Doğrulama:
 ```bash
 limonatad version
 ```
+
+> ⚠️ Seçenek A'da `version 'GLIBC_2.3x' not found` hatası alırsanız, hazır binary sisteminizden daha yeni bir glibc ile derlenmiştir. **Seçenek B**'ye geçin — detaylar için aşağıdaki [Sorun Giderme](#sorun-giderme) bölümüne bakın.
 
 ---
 
@@ -509,6 +514,51 @@ limonatad tx slashing unjail \
 # İmzalama bilgisi
 limonatad query slashing signing-info $(limonatad comet show-validator)
 ```
+
+---
+
+## Sorun Giderme
+
+### `version 'GLIBC_2.3x' not found (required by limonatad)`
+
+Bu hatayı, **hazır (prebuilt) release binary'sini** (Adım 4, Seçenek A) sisteminizden daha yeni bir glibc ile derlenmiş bir OS'ta çalıştırdığınızda görürsünüz — örneğin Ubuntu 22.04 (glibc 2.35), glibc 2.38+ ile derlenmiş bir binary'ye karşı.
+
+**Önerilen çözüm — kaynak koddan derleme (Seçenek B):** Bu, `limonatad`'ı kendi sunucunuzun glibc'sine karşı derler, dolayısıyla uyumsuzluk hiç oluşmaz. Sistemde hiçbir değişiklik yapılmaz, sunucudaki diğer servisler için sıfır risk taşır:
+
+```bash
+rm -f $HOME/.limonatad/cosmovisor/genesis/bin/limonatad
+
+cd $HOME
+git clone https://github.com/Limonata-Blockchain/limonata.git
+cd limonata
+make install
+
+mv $HOME/go/bin/evmd $HOME/.limonatad/cosmovisor/genesis/bin/limonatad
+limonatad version
+```
+
+**İleri seviye alternatif — tam olarak resmi release binary'sini tutmak, sadece bu binary'ye özel izole şekilde:** Canlı ağın çalıştırdığı tam build'i özellikle kullanmanız gerekiyorsa, sistemdeki `/lib/x86_64-linux-gnu`'ya ya da sunucudaki başka herhangi bir binary'ye dokunmadan, sadece bu tek ELF dosyasını kendi klasöründeki daha yeni bir glibc'yi kullanacak şekilde patch'leyebilirsiniz — diğer zincirlerde `LD_LIBRARY_PATH` ile yaptığımız "sistemi bulaştırma, sadece bir binary'ye özel scope et" mantığının aynısı:
+
+```bash
+sudo apt install -y patchelf
+
+# binary'nin gerçekte hangi GLIBC sürümünü istediğini kontrol edin
+strings $HOME/.limonatad/cosmovisor/genesis/bin/limonatad | grep -o 'GLIBC_2\.[0-9]*' | sort -V | uniq | tail -1
+
+# daha yeni bir Ubuntu sürümünden, sistem genelinde KURMADAN eşleşen glibc'yi indirin
+mkdir -p $HOME/.limonatad/glibc-compat && cd /tmp
+apt-get download libc6:amd64   # bunu eşleşen daha yeni bir dağıtımda çalıştırın, ya da .deb'i manuel indirin
+dpkg -x libc6_*.deb $HOME/.limonatad/glibc-compat
+
+# SADECE limonatad binary'sini bu paketlenmiş glibc'ye yönlendirin — sistem glibc'si dokunulmadan kalır
+patchelf --set-interpreter $HOME/.limonatad/glibc-compat/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 \
+  --set-rpath $HOME/.limonatad/glibc-compat/lib/x86_64-linux-gnu:$HOME/.limonatad/glibc-compat/usr/lib/x86_64-linux-gnu \
+  $HOME/.limonatad/cosmovisor/genesis/bin/limonatad
+
+limonatad version
+```
+
+> ⚠️ Bu işlem sadece `limonatad`'ın kendi ELF header'ını (interpreter + kütüphane arama yolu) değiştirir — sunucudaki diğer tüm binary ve servisler sistem glibc'sini değişmeden kullanmaya devam eder. Yine de bunu ileri seviye bir geçici çözüm olarak görün; kaynak koddan derlemek daha basittir ve hiçbir başarısızlık riski taşımaz.
 
 ---
 
